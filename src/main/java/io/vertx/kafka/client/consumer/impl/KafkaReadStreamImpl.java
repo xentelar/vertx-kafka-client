@@ -16,6 +16,8 @@
 
 package io.vertx.kafka.client.consumer.impl;
 
+import io.opentracing.Tracer;
+import io.opentracing.contrib.kafka.TracingKafkaConsumer;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Context;
 import io.vertx.core.Future;
@@ -408,6 +410,27 @@ public class KafkaReadStreamImpl<K, V> implements KafkaReadStream<K, V> {
 
     BiConsumer<Consumer<K, V>, Promise<Void>> handler = (consumer, future) -> {
       consumer.subscribe(topics, this.rebalanceListener);
+      this.startConsuming();
+      if (future != null) {
+        future.complete();
+      }
+    };
+
+    if (this.closed.compareAndSet(true, false)) {
+      this.start(handler, completionHandler);
+    } else {
+      this.submitTask(handler, completionHandler);
+    }
+
+    return this;
+  }
+
+  @Override
+  public KafkaReadStream<K, V> subscribe(Set<String> topics, Handler<AsyncResult<Void>> completionHandler, TracingKafkaConsumer tracer) {
+
+    BiConsumer<Consumer<K, V>, Promise<Void>> handler = (consumer, future) -> {
+      tracer.subscribe(topics, this.rebalanceListener);
+      //consumer.subscribe(topics, this.rebalanceListener);
       this.startConsuming();
       if (future != null) {
         future.complete();

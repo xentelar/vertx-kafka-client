@@ -30,7 +30,7 @@
 
   <properties>
     <stack.version>4.0.0-milestone3</stack.version>
-    <kafka.version>2.3.0</kafka.version>
+    <kafka.version>2.6.0</kafka.version>
     <debezium.version>0.8.3.Final</debezium.version>
   </properties>
 
@@ -66,6 +66,11 @@
       <groupId>org.apache.kafka</groupId>
       <artifactId>kafka-clients</artifactId>
       <version>${kafka.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.opentracing.contrib</groupId>
+      <artifactId>opentracing-kafka-client</artifactId>
+      <version>0.1.15</version>
     </dependency>
 
     <dependency>

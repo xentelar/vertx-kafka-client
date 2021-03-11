@@ -16,6 +16,8 @@
 
 package io.vertx.kafka.client.consumer.impl;
 
+import io.opentracing.Tracer;
+import io.opentracing.contrib.kafka.TracingKafkaConsumer;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Context;
 import io.vertx.core.Future;
@@ -187,8 +189,19 @@ public class KafkaConsumerImpl<K, V> implements KafkaConsumer<K, V> {
   }
 
   @Override
+  public KafkaConsumer<K, V> subscribe(String topic, Handler<AsyncResult<Void>> completionHandler, TracingKafkaConsumer tracer) {
+    return this.subscribe(Collections.singleton(topic), completionHandler, tracer);
+  }
+
+  @Override
   public KafkaConsumer<K, V> subscribe(Set<String> topics, Handler<AsyncResult<Void>> completionHandler) {
     this.stream.subscribe(topics, completionHandler);
+    return this;
+  }
+
+  @Override
+  public KafkaConsumer<K, V> subscribe(Set<String> topics, Handler<AsyncResult<Void>> completionHandler, TracingKafkaConsumer tracer) {
+    this.stream.subscribe(topics, completionHandler, tracer);
     return this;
   }
 
