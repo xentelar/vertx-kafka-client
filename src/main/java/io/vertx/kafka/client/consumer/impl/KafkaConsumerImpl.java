@@ -697,6 +697,17 @@ public class KafkaConsumerImpl<K, V> implements KafkaConsumer<K, V> {
   }
 
   @Override
+  public void poll(long timeout, Handler<AsyncResult<KafkaConsumerRecords<K, V>>> handler, TracingKafkaConsumer tracer) {
+    stream.poll(timeout, done -> {
+      if (done.succeeded()) {
+        handler.handle(Future.succeededFuture(new KafkaConsumerRecordsImpl<>(done.result())));
+      } else {
+        handler.handle(Future.failedFuture(done.cause()));
+      }
+    }, tracer);
+  }
+
+  @Override
   public Future<KafkaConsumerRecords<K, V>> poll(long timeout) {
     Promise<KafkaConsumerRecords<K, V>> promise = Promise.promise();
     poll(timeout, promise);

@@ -869,6 +869,17 @@ public interface KafkaConsumer<K, V> extends ReadStream<KafkaConsumerRecord<K, V
   void poll(long timeout, Handler<AsyncResult<KafkaConsumerRecords<K, V>>> handler);
 
   /**
+   * Executes a poll for getting messages from Kafka
+   *
+   * @param timeout The time, in milliseconds, spent waiting in poll if data is not available in the buffer.
+   *                If 0, returns immediately with any records that are available currently in the native Kafka consumer's buffer,
+   *                else returns empty. Must not be negative.
+   * @param handler handler called after the poll with batch of records (can be empty).
+   * @param tracer  opentracing tracer
+   */
+  void poll(long timeout, Handler<AsyncResult<KafkaConsumerRecords<K, V>>> handler, TracingKafkaConsumer tracer);
+
+  /**
    * Like {@link #poll(long, Handler)} but returns a {@code Future} of the asynchronous result
    */
   Future<KafkaConsumerRecords<K, V>> poll(long timeout);
