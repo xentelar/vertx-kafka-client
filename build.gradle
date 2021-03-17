@@ -1,13 +1,10 @@
 
 plugins {
-   // Apply the java plugin to add support for Java
    id 'java-library'
    id 'idea'
 }
 
 repositories {
-   // Use jcenter for resolving dependencies.
-   // You can declare any Maven/Ivy/file repository here.
    maven {
       url "https://repo1.maven.org/maven2/"
    }
@@ -28,7 +25,10 @@ dependencies {
 
   testImplementation group: 'junit', name: 'junit', version: '4.13.2'
   testImplementation group: 'io.vertx', name: 'vertx-unit', version: '4.0.0-milestone3'
+  testImplementation group: 'io.debezium', name: 'debezium-core', version: '0.8.3.Final'
   testImplementation group: 'io.debezium', name: 'debezium-core', version: '0.8.3.Final', classifier: 'tests'
+  testImplementation group: 'org.apache.kafka', name: 'kafka_2.11', version: '2.4.1'
+  testImplementation group: 'org.scala-lang', name: 'scala-library', version: '2.12.4'
 }
 
 sourceSets {
@@ -47,4 +47,8 @@ compileJava {
 
 java {
    disableAutoTargetJvm()
+}
+
+test {
+  exclude 'io/vertx/kafka/client/tests/**'
 }
