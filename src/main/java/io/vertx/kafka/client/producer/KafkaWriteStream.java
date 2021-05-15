@@ -23,6 +23,7 @@ import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.Vertx;
 import io.vertx.core.streams.WriteStream;
+import io.vertx.kafka.client.common.KafkaClientOptions;
 import io.vertx.kafka.client.producer.impl.KafkaWriteStreamImpl;
 import io.vertx.kafka.client.serialization.VertxSerdes;
 import org.apache.kafka.clients.producer.Producer;
@@ -31,6 +32,7 @@ import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.serialization.Serializer;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -53,7 +55,10 @@ public interface KafkaWriteStream<K, V> extends WriteStream<ProducerRecord<K, V>
    * @return  an instance of the KafkaWriteStream
    */
   static <K, V> KafkaWriteStream<K, V> create(Vertx vertx, Properties config) {
-    return KafkaWriteStreamImpl.create(vertx, config);
+    return new KafkaWriteStreamImpl<>(
+      vertx,
+      new org.apache.kafka.clients.producer.KafkaProducer<>(config),
+      KafkaClientOptions.fromProperties(config, true));
   }
 
   /**
@@ -68,7 +73,7 @@ public interface KafkaWriteStream<K, V> extends WriteStream<ProducerRecord<K, V>
   static <K, V> KafkaWriteStream<K, V> create(Vertx vertx, Properties config, Class<K> keyType, Class<V> valueType) {
     Serializer<K> keySerializer = VertxSerdes.serdeFrom(keyType).serializer();
     Serializer<V> valueSerializer = VertxSerdes.serdeFrom(valueType).serializer();
-    return KafkaWriteStreamImpl.create(vertx, config, keySerializer, valueSerializer);
+    return create(vertx, config, keySerializer, valueSerializer);
   }
 
   /**
@@ -81,7 +86,10 @@ public interface KafkaWriteStream<K, V> extends WriteStream<ProducerRecord<K, V>
    * @return  an instance of the KafkaWriteStream
    */
   static <K, V> KafkaWriteStream<K, V> create(Vertx vertx, Properties config, Serializer<K> keySerializer, Serializer<V> valueSerializer) {
-    return KafkaWriteStreamImpl.create(vertx, config, keySerializer, valueSerializer);
+    return new KafkaWriteStreamImpl<>(
+      vertx,
+      new org.apache.kafka.clients.producer.KafkaProducer<>(config, keySerializer, valueSerializer),
+      KafkaClientOptions.fromProperties(config, true));
   }
 
   /**
@@ -92,7 +100,10 @@ public interface KafkaWriteStream<K, V> extends WriteStream<ProducerRecord<K, V>
    * @return  an instance of the KafkaWriteStream
    */
   static <K, V> KafkaWriteStream<K, V> create(Vertx vertx, Map<String, Object> config) {
-    return KafkaWriteStreamImpl.create(vertx, config);
+    return new KafkaWriteStreamImpl<>(
+      vertx,
+      new org.apache.kafka.clients.producer.KafkaProducer<>(config),
+      KafkaClientOptions.fromMap(config, true));
   }
 
   /**
@@ -107,7 +118,7 @@ public interface KafkaWriteStream<K, V> extends WriteStream<ProducerRecord<K, V>
   static <K, V> KafkaWriteStream<K, V> create(Vertx vertx, Map<String, Object> config, Class<K> keyType, Class<V> valueType) {
     Serializer<K> keySerializer = VertxSerdes.serdeFrom(keyType).serializer();
     Serializer<V> valueSerializer = VertxSerdes.serdeFrom(valueType).serializer();
-    return KafkaWriteStreamImpl.create(vertx, config, keySerializer, valueSerializer);
+    return create(vertx, config, keySerializer, valueSerializer);
   }
 
   /**
@@ -120,7 +131,60 @@ public interface KafkaWriteStream<K, V> extends WriteStream<ProducerRecord<K, V>
    * @return  an instance of the KafkaWriteStream
    */
   static <K, V> KafkaWriteStream<K, V> create(Vertx vertx, Map<String, Object> config, Serializer<K> keySerializer, Serializer<V> valueSerializer) {
-    return KafkaWriteStreamImpl.create(vertx, config, keySerializer, valueSerializer);
+    return new KafkaWriteStreamImpl<>(
+      vertx,
+      new org.apache.kafka.clients.producer.KafkaProducer<>(config, keySerializer, valueSerializer),
+      KafkaClientOptions.fromMap(config, true));
+  }
+
+  /**
+   * Create a new KafkaWriteStream instance
+   *
+   * @param vertx Vert.x instance to use
+   * @param options  Kafka producer options
+   * @return  an instance of the KafkaWriteStream
+   */
+  static <K, V> KafkaWriteStream<K, V> create(Vertx vertx, KafkaClientOptions options) {
+    Map<String, Object> config = new HashMap<>();
+    if (options.getConfig() != null) {
+      config.putAll(options.getConfig());
+    }
+    return new KafkaWriteStreamImpl<>(vertx, new org.apache.kafka.clients.producer.KafkaProducer<>(config), options);
+  }
+
+  /**
+   * Create a new KafkaWriteStream instance
+   *
+   * @param vertx Vert.x instance to use
+   * @param options  Kafka producer options
+   * @param keyType class type for the key serialization
+   * @param valueType class type for the value serialization
+   * @return  an instance of the KafkaWriteStream
+   */
+  static <K, V> KafkaWriteStream<K, V> create(Vertx vertx, KafkaClientOptions options, Class<K> keyType, Class<V> valueType) {
+    Serializer<K> keySerializer = VertxSerdes.serdeFrom(keyType).serializer();
+    Serializer<V> valueSerializer = VertxSerdes.serdeFrom(valueType).serializer();
+    return create(vertx, options, keySerializer, valueSerializer);
+  }
+
+  /**
+   * Create a new KafkaWriteStream instance
+   *
+   * @param vertx Vert.x instance to use
+   * @param options  Kafka producer options
+   * @param keySerializer key serializer
+   * @param valueSerializer value serializer
+   * @return  an instance of the KafkaWriteStream
+   */
+  static <K, V> KafkaWriteStream<K, V> create(Vertx vertx, KafkaClientOptions options, Serializer<K> keySerializer, Serializer<V> valueSerializer) {
+    Map<String, Object> config = new HashMap<>();
+    if (options.getConfig() != null) {
+      config.putAll(options.getConfig());
+    }
+    return new KafkaWriteStreamImpl<>(
+      vertx,
+      new org.apache.kafka.clients.producer.KafkaProducer<>(config, keySerializer, valueSerializer),
+      options);
   }
 
   /**
@@ -130,7 +194,7 @@ public interface KafkaWriteStream<K, V> extends WriteStream<ProducerRecord<K, V>
    * @param producer  native Kafka producer instance
    */
   static <K, V> KafkaWriteStream<K, V> create(Vertx vertx, Producer<K, V> producer) {
-    return new KafkaWriteStreamImpl<>(vertx.getOrCreateContext(), producer);
+    return new KafkaWriteStreamImpl<>(vertx, producer, new KafkaClientOptions());
   }
 
   @Fluent
@@ -144,6 +208,58 @@ public interface KafkaWriteStream<K, V> extends WriteStream<ProducerRecord<K, V>
   @Fluent
   @Override
   KafkaWriteStream<K, V> drainHandler(@Nullable Handler<Void> handler);
+
+  /**
+   * Initializes the underlying kafka transactional producer. See {@link KafkaProducer#initTransactions()} ()}
+   *
+   * @param handler handler called on operation completed
+   * @return current KafkaWriteStream instance
+   */
+  KafkaWriteStream<K, V> initTransactions(Handler<AsyncResult<Void>> handler);
+
+  /**
+   * Like {@link #initTransactions(Handler)} but with a future of the result
+   */
+  Future<Void> initTransactions();
+
+  /**
+   * Starts a new kafka transaction. See {@link KafkaProducer#beginTransaction()}
+   *
+   * @param handler handler called on operation completed
+   * @return current KafkaWriteStream instance
+   */
+  KafkaWriteStream<K, V> beginTransaction(Handler<AsyncResult<Void>> handler);
+
+  /**
+   * Like {@link #beginTransaction(Handler)} but with a future of the result
+   */
+  Future<Void> beginTransaction();
+
+  /**
+   * Commits the ongoing transaction. See {@link KafkaProducer#commitTransaction()}
+   *
+   * @param handler handler called on operation completed
+   * @return current KafkaWriteStream instance
+   */
+  KafkaWriteStream<K, V> commitTransaction(Handler<AsyncResult<Void>> handler);
+
+  /**
+   * Like {@link #commitTransaction(Handler)} but with a future of the result
+   */
+  Future<Void> commitTransaction();
+
+  /**
+   * Aborts the ongoing transaction. See {@link org.apache.kafka.clients.producer.KafkaProducer#abortTransaction()}
+   *
+   * @param handler handler called on operation completed
+   * @return current KafkaWriteStream instance
+   */
+  KafkaWriteStream<K, V> abortTransaction(Handler<AsyncResult<Void>> handler);
+
+  /**
+   * Like {@link #abortTransaction(Handler)} but with a future of the result
+   */
+  Future<Void> abortTransaction();
 
   /**
    * Asynchronously write a record to a topic

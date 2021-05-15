@@ -16,8 +16,10 @@
 
 package io.vertx.kafka.client.tests;
 
+import io.vertx.kafka.admin.ConsumerGroupListing;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -28,6 +30,8 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.HashSet;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
@@ -35,16 +39,22 @@ import java.util.stream.Collectors;
 import io.vertx.kafka.admin.Config;
 import io.vertx.kafka.admin.ConfigEntry;
 import io.vertx.kafka.admin.ConsumerGroupDescription;
+import io.vertx.kafka.admin.ListOffsetsResultInfo;
 import io.vertx.kafka.admin.MemberAssignment;
 import io.vertx.kafka.admin.MemberDescription;
 import io.vertx.kafka.admin.NewTopic;
+import io.vertx.kafka.admin.OffsetSpec;
 import io.vertx.kafka.admin.TopicDescription;
 import io.vertx.kafka.client.common.ConfigResource;
+import io.vertx.kafka.client.common.Node;
 import io.vertx.kafka.client.common.TopicPartition;
 import io.vertx.kafka.client.common.TopicPartitionInfo;
 import org.apache.kafka.clients.admin.AdminClientConfig;
+import org.apache.kafka.clients.consumer.OffsetAndMetadata;
+import org.apache.kafka.clients.consumer.OffsetCommitCallback;
 import org.apache.kafka.clients.consumer.OffsetResetStrategy;
 import org.apache.kafka.common.config.TopicConfig;
+import org.apache.kafka.common.serialization.IntegerDeserializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.junit.After;
 import org.junit.Before;
@@ -67,6 +77,7 @@ public class AdminClientTest extends KafkaClusterTestBase {
   static {
     topics.add("first-topic");
     topics.add("second-topic");
+//    topics.add("offsets-topic");
   }
 
   @Before
@@ -98,6 +109,8 @@ public class AdminClientTest extends KafkaClusterTestBase {
     vertx.setTimer(1000, t -> {
       adminClient.listTopics(ctx.asyncAssertSuccess(res ->{
         ctx.assertTrue(res.containsAll(topics), "Was expecting topics " + topics + " to be in " + res);
+
+        adminClient.close();
         async.complete();
       }));
     });
@@ -128,6 +141,7 @@ public class AdminClientTest extends KafkaClusterTestBase {
         ctx.assertEquals(1, topicPartitionInfo.getIsr().size());
         ctx.assertEquals(1, topicPartitionInfo.getIsr().get(0).getId());
 
+        adminClient.close();
         async.complete();
       }));
     });
@@ -146,7 +160,9 @@ public class AdminClientTest extends KafkaClusterTestBase {
         ctx.assertEquals(1, topicDescription.getPartitions().size());
         ctx.assertEquals(1, topicDescription.getPartitions().get(0).getReplicas().size());
 
-        adminClient.deleteTopics(Collections.singletonList("testCreateTopic"), ctx.asyncAssertSuccess());
+        adminClient.deleteTopics(Collections.singletonList("testCreateTopic"), ctx.asyncAssertSuccess(v1 -> {
+          adminClient.close();
+        }));
       }));
     }));
   }
@@ -180,7 +196,9 @@ public class AdminClientTest extends KafkaClusterTestBase {
           ctx.assertTrue(configEntry.isPresent());
           ctx.assertEquals("1000", configEntry.get().getValue());
 
-          adminClient.deleteTopics(Collections.singletonList("testCreateTopicWithConfigs"), ctx.asyncAssertSuccess());
+          adminClient.deleteTopics(Collections.singletonList("testCreateTopicWithConfigs"), ctx.asyncAssertSuccess(v1 -> {
+            adminClient.close();
+          }));
         }));
       }));
     }));
@@ -204,6 +222,7 @@ public class AdminClientTest extends KafkaClusterTestBase {
         ctx.assertTrue(topics.contains("topicToDelete"));
 
         adminClient.deleteTopics(Collections.singletonList("topicToDelete"), ctx.asyncAssertSuccess(v -> {
+          adminClient.close();
           async.complete();
         }));
       }));
@@ -218,6 +237,7 @@ public class AdminClientTest extends KafkaClusterTestBase {
     adminClient.describeConfigs(Collections.singletonList(
       new ConfigResource(org.apache.kafka.common.config.ConfigResource.Type.TOPIC, "first-topic")), ctx.asyncAssertSuccess(desc -> {
       ctx.assertFalse(desc.isEmpty());
+      adminClient.close();
     }));
   }
 
@@ -245,6 +265,7 @@ public class AdminClientTest extends KafkaClusterTestBase {
             .get(0);
 
         ctx.assertEquals("51000", describeRetentionEntry.getValue());
+        adminClient.close();
       }));
     }));
   }
@@ -267,8 +288,9 @@ public class AdminClientTest extends KafkaClusterTestBase {
 
       adminClient.listConsumerGroups(ctx.asyncAssertSuccess(groups -> {
 
-        ctx.assertEquals(1, groups.size());
-        ctx.assertEquals("groupId", groups.get(0).getGroupId());
+        ctx.assertTrue(groups.size() > 0);
+        ctx.assertTrue(groups.stream().map(ConsumerGroupListing::getGroupId).anyMatch(g -> g.equals("groupId")));
+        adminClient.close();
         async.complete();
       }));
 
@@ -306,10 +328,48 @@ public class AdminClientTest extends KafkaClusterTestBase {
         ctx.assertTrue(iterator.hasNext());
         ctx.assertEquals("first-topic", iterator.next().getTopic());
 
+        adminClient.close();
         async.complete();
       }));
 
     });
+  }
+
+  @Test
+  public void testDeleteConsumerGroups(TestContext ctx) {
+
+    KafkaAdminClient adminClient = KafkaAdminClient.create(this.vertx, config);
+
+    Async async = ctx.async();
+
+    final Async consumeAsync = ctx.async();
+    final AtomicBoolean groupIsEmpty = new AtomicBoolean();
+    groupIsEmpty.set(true);
+    kafkaCluster.useTo().consume("groupId-1", "clientId-1", OffsetResetStrategy.EARLIEST,
+      new StringDeserializer(), new StringDeserializer(), groupIsEmpty::get, null, consumeAsync::complete,
+      Collections.singleton("first-topic"), c -> { groupIsEmpty.set(false); });
+
+    kafkaCluster.useTo().consume("groupId-2", "clientId-2", OffsetResetStrategy.EARLIEST,
+      new StringDeserializer(), new StringDeserializer(), () -> true, null, null,
+      Collections.singleton("first-topic"), c -> { });
+
+    kafkaCluster.useTo().produceIntegers("first-topic", 6, 1, null);
+
+    consumeAsync.awaitSuccess(10000);
+
+      adminClient.deleteConsumerGroups(Collections.singletonList("groupId-1"), ctx.asyncAssertSuccess(v -> {
+
+      adminClient.listConsumerGroups(ctx.asyncAssertSuccess(groups -> {
+
+        ctx.assertTrue(groups.stream().map(ConsumerGroupListing::getGroupId).noneMatch(g -> g.equals("groupId-1")));
+        ctx.assertTrue(groups.stream().map(ConsumerGroupListing::getGroupId).anyMatch(g -> g.equals("groupId-2")));
+
+        adminClient.close();
+        async.complete();
+      }));
+
+    }));
+
   }
 
   @Test
@@ -382,9 +442,228 @@ public class AdminClientTest extends KafkaClusterTestBase {
     assertEquals(2, (int)consumers.get("your-topic"));
     assertEquals(2, (int)consumers.get("his-topic"));
   }
+  @Test
+  public void testDescribeCluster(TestContext ctx) {
+
+    KafkaAdminClient adminClient = KafkaAdminClient.create(this.vertx, config);
+
+    Async async = ctx.async();
+
+    // timer because, Kafka cluster takes time to start consumer
+    vertx.setTimer(1000, t -> {
+
+      adminClient.describeCluster(ctx.asyncAssertSuccess(cluster -> {
+        ctx.assertNotNull(cluster.getClusterId());
+        Node controller = cluster.getController();
+        ctx.assertNotNull(controller);
+        ctx.assertEquals(1, controller.getId());
+        ctx.assertEquals("localhost", controller.getHost());
+        ctx.assertEquals(false, controller.hasRack());
+        ctx.assertEquals("1", controller.getIdString());
+        ctx.assertEquals(false, controller.isEmpty());
+        ctx.assertEquals(9092, controller.getPort());
+        ctx.assertEquals(null, controller.rack());
+        Collection<Node> nodes = cluster.getNodes();
+        ctx.assertNotNull(nodes);
+        ctx.assertEquals(1, nodes.size());
+        ctx.assertEquals(1, nodes.iterator().next().getId());
+        adminClient.close();
+        async.complete();
+      }));
+
+    });
+  }
 
   private static <T> Predicate<T> distinctByKey(Function<? super T, ?> keyExtractor) {
     Set<Object> seen = ConcurrentHashMap.newKeySet();
     return t -> seen.add(keyExtractor.apply(t));
+  }
+
+  @Test
+  public void testListConsumerGroupOffsets(TestContext ctx) throws InterruptedException {
+
+    final String topicName = "offsets-topic";
+    kafkaCluster.createTopic(topicName, 2, 1);
+
+    Async producerAsync = ctx.async();
+    kafkaCluster.useTo().produceIntegers(topicName, 6, 1, producerAsync::complete);
+    producerAsync.awaitSuccess(10000);
+
+    final String groupId = "group-id";
+    final String clientId = "client-id";
+    final AtomicInteger counter = new AtomicInteger();
+    final OffsetCommitCallback offsetCommitCallback = new OffsetCommitCallback() {
+      @Override
+      public void onComplete(Map<org.apache.kafka.common.TopicPartition, OffsetAndMetadata> map, Exception e) {
+      }
+    };
+    final Async consumerAsync = ctx.async();
+
+    kafkaCluster.useTo().consume(groupId, clientId, OffsetResetStrategy.EARLIEST, new StringDeserializer(), new IntegerDeserializer(),
+      () -> counter.get() < 6, offsetCommitCallback, consumerAsync::complete, Collections.singletonList(topicName),
+      record -> { counter.incrementAndGet(); });
+    consumerAsync.awaitSuccess(10000);
+
+    final KafkaAdminClient adminClient = KafkaAdminClient.create(this.vertx, config);
+    final Async async = ctx.async();
+
+    adminClient.listConsumerGroupOffsets(groupId, ctx.asyncAssertSuccess(consumerGroupOffsets -> {
+
+      TopicPartition topicPartition0 = new TopicPartition().setTopic(topicName).setPartition(0);
+      TopicPartition topicPartition1 = new TopicPartition().setTopic(topicName).setPartition(0);
+      ctx.assertEquals(2, consumerGroupOffsets.size());
+      ctx.assertTrue(consumerGroupOffsets.containsKey(topicPartition0));
+      ctx.assertEquals(3L, consumerGroupOffsets.get(topicPartition0).getOffset());
+      ctx.assertTrue(consumerGroupOffsets.containsKey(topicPartition1));
+      ctx.assertEquals(3L, consumerGroupOffsets.get(topicPartition1).getOffset());
+
+      adminClient.close();
+      async.complete();
+    }));
+  }
+
+  @Test
+  public void testDeleteConsumerGroupOffsets(TestContext ctx) throws InterruptedException {
+
+    final String topicName = "delete-offsets";
+    kafkaCluster.createTopic(topicName, 2, 1);
+
+    Async producerAsync = ctx.async();
+    kafkaCluster.useTo().produceIntegers(topicName, 6, 1, producerAsync::complete);
+    producerAsync.awaitSuccess(10000);
+
+    final String groupId = "group-id";
+    final String clientId = "client-id";
+    final AtomicInteger counter = new AtomicInteger();
+    final OffsetCommitCallback offsetCommitCallback = new OffsetCommitCallback() {
+      @Override
+      public void onComplete(Map<org.apache.kafka.common.TopicPartition, OffsetAndMetadata> map, Exception e) {
+      }
+    };
+    final Async consumerAsync = ctx.async();
+
+    kafkaCluster.useTo().consume(groupId, clientId, OffsetResetStrategy.EARLIEST, new StringDeserializer(), new IntegerDeserializer(),
+      () -> counter.get() < 6, offsetCommitCallback, consumerAsync::complete, Collections.singletonList(topicName),
+      record -> { counter.incrementAndGet(); });
+    consumerAsync.awaitSuccess(10000);
+
+    final KafkaAdminClient adminClient = KafkaAdminClient.create(this.vertx, config);
+    final Async async = ctx.async();
+
+    final TopicPartition topicPartition0 = new TopicPartition().setTopic(topicName).setPartition(0);
+    adminClient.deleteConsumerGroupOffsets(groupId, Collections.singleton(topicPartition0), ctx.asyncAssertSuccess(v -> {
+
+      adminClient.listConsumerGroupOffsets(groupId, ctx.asyncAssertSuccess(consumerGroupOffsets -> {
+
+        final TopicPartition topicPartition1 = new TopicPartition().setTopic(topicName).setPartition(1);
+        ctx.assertTrue(consumerGroupOffsets.containsKey(topicPartition1));
+        ctx.assertEquals(3L, consumerGroupOffsets.get(topicPartition1).getOffset());
+
+        adminClient.close();
+        async.complete();
+      }));
+
+    }));
+  }
+
+  @Test
+  public void testAlterConsumerGroupOffsets(TestContext ctx) throws InterruptedException {
+
+    final String topicName = "alter-offsets";
+    kafkaCluster.createTopic(topicName, 2, 1);
+
+    Async producerAsync = ctx.async();
+    kafkaCluster.useTo().produceIntegers(topicName, 6, 1, producerAsync::complete);
+    producerAsync.awaitSuccess(10000);
+
+    final String groupId = "group-id";
+    final String clientId = "client-id";
+    final AtomicInteger counter = new AtomicInteger();
+    final OffsetCommitCallback offsetCommitCallback = new OffsetCommitCallback() {
+      @Override
+      public void onComplete(Map<org.apache.kafka.common.TopicPartition, OffsetAndMetadata> map, Exception e) {
+      }
+    };
+    final Async consumerAsync = ctx.async();
+
+    kafkaCluster.useTo().consume(groupId, clientId, OffsetResetStrategy.EARLIEST, new StringDeserializer(), new IntegerDeserializer(),
+            () -> counter.get() < 6, offsetCommitCallback, consumerAsync::complete, Collections.singletonList(topicName),
+            record -> { counter.incrementAndGet(); });
+    consumerAsync.awaitSuccess(10000);
+
+    final KafkaAdminClient adminClient = KafkaAdminClient.create(this.vertx, config);
+    final Async async = ctx.async();
+
+    final TopicPartition topicPartition0 = new TopicPartition().setTopic(topicName).setPartition(0);
+    long newOffset = 42L;
+    String newMetadata = "vertx-rulezz";
+
+    io.vertx.kafka.client.consumer.OffsetAndMetadata oam = new io.vertx.kafka.client.consumer.OffsetAndMetadata(newOffset, newMetadata);
+    adminClient.alterConsumerGroupOffsets(groupId, Collections.singletonMap(topicPartition0, oam), ctx.asyncAssertSuccess(v -> {
+      adminClient.listConsumerGroupOffsets(groupId, ctx.asyncAssertSuccess(consumerGroupOffsets -> {
+
+        final TopicPartition topicPartition1 = new TopicPartition().setTopic(topicName).setPartition(0);
+        ctx.assertTrue(consumerGroupOffsets.containsKey(topicPartition1));
+        ctx.assertEquals(newOffset, consumerGroupOffsets.get(topicPartition1).getOffset());
+        ctx.assertEquals(newMetadata, consumerGroupOffsets.get(topicPartition1).getMetadata());
+
+        adminClient.close();
+        async.complete();
+      }));
+    }));
+  }
+
+  @Test
+  public void testListOffsets(TestContext ctx) {
+    final String topicName = "list-offsets-topic";
+    kafkaCluster.createTopic(topicName, 1, 1);
+
+    Async producerAsync = ctx.async();
+    kafkaCluster.useTo().produceIntegers(topicName, 6, 1, producerAsync::complete);
+    producerAsync.awaitSuccess(10000);
+
+    final KafkaAdminClient adminClient = KafkaAdminClient.create(this.vertx, config);
+    final TopicPartition topicPartition0 = new TopicPartition().setTopic(topicName).setPartition(0);
+
+    // BeginOffsets
+    Map<TopicPartition, OffsetSpec> topicPartitionBeginOffsets = Collections.singletonMap(topicPartition0, OffsetSpec.EARLIEST);
+    final Async async1 = ctx.async();
+    adminClient.listOffsets(topicPartitionBeginOffsets, ctx.asyncAssertSuccess(listOffsets -> {
+      ListOffsetsResultInfo offsets = listOffsets.get(topicPartition0);
+      ctx.assertNotNull(offsets);
+      ctx.assertEquals(0L, offsets.getOffset());
+      async1.complete();
+    }));
+
+    // EndOffsets
+    Map<TopicPartition, OffsetSpec> topicPartitionEndOffsets = Collections.singletonMap(topicPartition0, OffsetSpec.LATEST);
+    final Async async2 = ctx.async();
+    adminClient.listOffsets(topicPartitionEndOffsets, ctx.asyncAssertSuccess(listOffsets -> {
+      ListOffsetsResultInfo offsets = listOffsets.get(topicPartition0);
+      ctx.assertNotNull(offsets);
+      ctx.assertEquals(6L, offsets.getOffset());
+      adminClient.close();
+      async2.complete();
+    }));
+  }
+
+  @Test
+  public void testListOffsetsNoTopic(TestContext ctx) {
+    final String topicName = "list-offsets-notopic";
+
+    final KafkaAdminClient adminClient = KafkaAdminClient.create(this.vertx, config);
+    final TopicPartition topicPartition0 = new TopicPartition().setTopic(topicName).setPartition(0);
+
+    // BeginOffsets of a non existent topic-partition
+    Map<TopicPartition, OffsetSpec> topicPartitionBeginOffsets = Collections.singletonMap(topicPartition0, OffsetSpec.EARLIEST);
+    adminClient.listOffsets(topicPartitionBeginOffsets, ctx.asyncAssertFailure());
+  }
+
+  @Test
+  public void testAsyncClose(TestContext ctx) {
+    KafkaAdminClient adminClient = KafkaAdminClient.create(this.vertx, config);
+    adminClient.listTopics(ctx.asyncAssertSuccess(topics -> {
+      adminClient.close(ctx.asyncAssertSuccess());
+    }));
   }
 }

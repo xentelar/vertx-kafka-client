@@ -26,12 +26,14 @@ import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.Vertx;
 import io.vertx.core.streams.ReadStream;
+import io.vertx.kafka.client.common.KafkaClientOptions;
 import io.vertx.kafka.client.common.PartitionInfo;
 import io.vertx.kafka.client.common.TopicPartition;
 import io.vertx.kafka.client.consumer.impl.KafkaConsumerImpl;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.common.serialization.Deserializer;
 
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -63,7 +65,7 @@ public interface KafkaConsumer<K, V> extends ReadStream<KafkaConsumerRecord<K, V
   @GenIgnore
   static <K, V> KafkaConsumer<K, V> create(Vertx vertx, Consumer<K, V> consumer) {
     KafkaReadStream<K, V> stream = KafkaReadStream.create(vertx, consumer);
-    return new KafkaConsumerImpl<K, V>(stream);
+    return new KafkaConsumerImpl<>(stream);
   }
 
   /**
@@ -106,6 +108,49 @@ public interface KafkaConsumer<K, V> extends ReadStream<KafkaConsumerRecord<K, V
   static <K, V> KafkaConsumer<K, V> create(Vertx vertx, Map<String, String> config,
                                            Deserializer<K> keyDeserializer, Deserializer<V> valueDeserializer) {
     KafkaReadStream<K, V> stream = KafkaReadStream.create(vertx, new HashMap<>(config), keyDeserializer, valueDeserializer);
+    return new KafkaConsumerImpl<>(stream).registerCloseHook();
+  }
+
+  /**
+   * Create a new KafkaConsumer instance
+   *
+   * @param vertx Vert.x instance to use
+   * @param options Kafka consumer options
+   * @return  an instance of the KafkaConsumer
+   */
+  static <K, V> KafkaConsumer<K, V> create(Vertx vertx, KafkaClientOptions options) {
+    KafkaReadStream<K, V> stream = KafkaReadStream.create(vertx, options);
+    return new KafkaConsumerImpl<>(stream).registerCloseHook();
+  }
+
+  /**
+   * Create a new KafkaConsumer instance
+   *
+   * @param vertx Vert.x instance to use
+   * @param options  Kafka consumer options
+   * @param keyType class type for the key deserialization
+   * @param valueType class type for the value deserialization
+   * @return  an instance of the KafkaConsumer
+   */
+  static <K, V> KafkaConsumer<K, V> create(Vertx vertx, KafkaClientOptions options,
+                                           Class<K> keyType, Class<V> valueType) {
+    KafkaReadStream<K, V> stream = KafkaReadStream.create(vertx, options, keyType, valueType);
+    return new KafkaConsumerImpl<>(stream).registerCloseHook();
+  }
+
+  /**
+   * Create a new KafkaConsumer instance
+   *
+   * @param vertx Vert.x instance to use
+   * @param options  Kafka consumer options
+   * @param keyDeserializer key deserializer
+   * @param valueDeserializer value deserializer
+   * @return  an instance of the KafkaConsumer
+   */
+  @GenIgnore
+  static <K, V> KafkaConsumer<K, V> create(Vertx vertx, KafkaClientOptions options,
+                                           Deserializer<K> keyDeserializer, Deserializer<V> valueDeserializer) {
+    KafkaReadStream<K, V> stream = KafkaReadStream.create(vertx, options, keyDeserializer, valueDeserializer);
     return new KafkaConsumerImpl<>(stream).registerCloseHook();
   }
 
@@ -176,6 +221,18 @@ public interface KafkaConsumer<K, V> extends ReadStream<KafkaConsumerRecord<K, V
   @Fluent
   @Override
   KafkaConsumer<K, V> endHandler(Handler<Void> endHandler);
+
+  /**
+   * Returns the current demand.
+   *
+   * <ul>
+   *   <i>If the stream is in <i>flowing</i> mode will return {@link Long#MAX_VALUE}.</i>
+   *   <li>If the stream is in <i>fetch</i> mode, will return the current number of elements still to be delivered or 0 if paused.</li>
+   * </ul>
+   *
+   * @return current demand
+   */
+  long demand();
 
   /**
    * Subscribe to the given topic to get dynamically assigned partitions.
@@ -846,27 +903,33 @@ public interface KafkaConsumer<K, V> extends ReadStream<KafkaConsumerRecord<K, V
   Consumer<K, V> unwrap();
 
   /**
-   * Sets the poll timeout (in ms) for the underlying native Kafka Consumer. Defaults to 1000.
+   * Sets the poll timeout for the underlying native Kafka Consumer. Defaults to 1000ms.
    * Setting timeout to a lower value results in a more 'responsive' client, because it will block for a shorter period
    * if no data is available in the assigned partition and therefore allows subsequent actions to be executed with a shorter
    * delay. At the same time, the client will poll more frequently and thus will potentially create a higher load on the Kafka Broker.
    *
-   * @param timeout The time, in milliseconds, spent waiting in poll if data is not available in the buffer.
+   * @param timeout The time, spent waiting in poll if data is not available in the buffer.
    * If 0, returns immediately with any records that are available currently in the native Kafka consumer's buffer,
    * else returns empty. Must not be negative.
    */
   @Fluent
-  KafkaConsumer<K, V> pollTimeout(long timeout);
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  KafkaConsumer<K, V> pollTimeout(Duration timeout);
 
   /**
-   * Executes a poll for getting messages from Kafka
+   * Executes a poll for getting messages from Kafka.
    *
-   * @param timeout The time, in milliseconds, spent waiting in poll if data is not available in the buffer.
-   *                If 0, returns immediately with any records that are available currently in the native Kafka consumer's buffer,
-   *                else returns empty. Must not be negative.
+   * @param timeout The maximum time to block (must not be greater than {@link Long#MAX_VALUE} milliseconds)
    * @param handler handler called after the poll with batch of records (can be empty).
    */
-  void poll(long timeout, Handler<AsyncResult<KafkaConsumerRecords<K, V>>> handler);
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  void poll(Duration timeout, Handler<AsyncResult<KafkaConsumerRecords<K, V>>> handler);
+
+  /**
+   * Like {@link #poll(Duration, Handler)} but returns a {@code Future} of the asynchronous result
+   */
+  @GenIgnore(GenIgnore.PERMITTED_TYPE)
+  Future<KafkaConsumerRecords<K, V>> poll(Duration timeout);
 
   /**
    * Executes a poll for getting messages from Kafka
@@ -877,11 +940,6 @@ public interface KafkaConsumer<K, V> extends ReadStream<KafkaConsumerRecord<K, V
    * @param handler handler called after the poll with batch of records (can be empty).
    * @param tracer  opentracing tracer
    */
-  void poll(long timeout, Handler<AsyncResult<KafkaConsumerRecords<K, V>>> handler, TracingKafkaConsumer tracer);
-
-  /**
-   * Like {@link #poll(long, Handler)} but returns a {@code Future} of the asynchronous result
-   */
-  Future<KafkaConsumerRecords<K, V>> poll(long timeout);
+  void poll(Duration timeout, Handler<AsyncResult<KafkaConsumerRecords<K, V>>> handler, TracingKafkaConsumer tracer);
 
 }

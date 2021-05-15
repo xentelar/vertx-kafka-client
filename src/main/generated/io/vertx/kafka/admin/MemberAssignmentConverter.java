@@ -2,6 +2,7 @@ package io.vertx.kafka.admin;
 
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.json.JsonArray;
+import io.vertx.core.json.impl.JsonUtil;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 
@@ -20,7 +21,7 @@ public class MemberAssignmentConverter {
             java.util.LinkedHashSet<io.vertx.kafka.client.common.TopicPartition> list =  new java.util.LinkedHashSet<>();
             ((Iterable<Object>)member.getValue()).forEach( item -> {
               if (item instanceof JsonObject)
-                list.add(new io.vertx.kafka.client.common.TopicPartition((JsonObject)item));
+                list.add(new io.vertx.kafka.client.common.TopicPartition((io.vertx.core.json.JsonObject)item));
             });
             obj.setTopicPartitions(list);
           }

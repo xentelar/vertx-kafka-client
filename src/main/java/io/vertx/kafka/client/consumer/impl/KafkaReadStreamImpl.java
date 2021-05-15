@@ -23,7 +23,11 @@ import io.vertx.core.Context;
 import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.Promise;
+import io.vertx.core.Vertx;
+import io.vertx.core.impl.ContextInternal;
+import io.vertx.kafka.client.common.KafkaClientOptions;
 import io.vertx.kafka.client.common.impl.Helper;
+import io.vertx.kafka.client.common.tracing.ConsumerTracer;
 import io.vertx.kafka.client.consumer.KafkaReadStream;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
@@ -35,6 +39,7 @@ import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.WakeupException;
 
+import java.time.Duration;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -60,6 +65,7 @@ public class KafkaReadStreamImpl<K, V> implements KafkaReadStream<K, V> {
   private final Context context;
   private final AtomicBoolean closed = new AtomicBoolean(true);
   private final Consumer<K, V> consumer;
+  private final ConsumerTracer tracer;
 
   private final AtomicBoolean consuming = new AtomicBoolean(false);
   private final AtomicLong demand = new AtomicLong(Long.MAX_VALUE);
@@ -70,7 +76,7 @@ public class KafkaReadStreamImpl<K, V> implements KafkaReadStream<K, V> {
   private Handler<ConsumerRecords<K, V>> batchHandler;
   private Handler<Set<TopicPartition>> partitionsRevokedHandler;
   private Handler<Set<TopicPartition>> partitionsAssignedHandler;
-  private long pollTimeout = 1000L;
+  private Duration pollTimeout = Duration.ofSeconds(1);
 
   private ExecutorService worker;
 
@@ -99,9 +105,11 @@ public class KafkaReadStreamImpl<K, V> implements KafkaReadStream<K, V> {
     }
   };
 
-  public KafkaReadStreamImpl(Context context, Consumer<K, V> consumer) {
-    this.context = context;
+  public KafkaReadStreamImpl(Vertx vertx, Consumer<K, V> consumer, KafkaClientOptions options) {
     this.consumer = consumer;
+    ContextInternal ctxInt = (ContextInternal) vertx.getOrCreateContext();
+    this.context = ctxInt;
+    this.tracer = ConsumerTracer.create(ctxInt.tracer(), options);
   }
 
   private <T> void start(java.util.function.BiConsumer<Consumer<K, V>, Promise<T>> task, Handler<AsyncResult<T>> handler) {
@@ -117,7 +125,7 @@ public class KafkaReadStreamImpl<K, V> implements KafkaReadStream<K, V> {
       Promise<T> future = null;
       if (handler != null) {
         future = Promise.promise();
-        future.future().setHandler(event-> {
+        future.future().onComplete(event-> {
           // When we've executed the task on the worker thread,
           // run the callback on the eventloop thread
           this.context.runOnContext(v-> {
@@ -228,10 +236,27 @@ public class KafkaReadStreamImpl<K, V> implements KafkaReadStream<K, V> {
         }
 
         ConsumerRecord<K, V> next = this.current.next();
-        handler.handle(next);
+        this.tracedHandler(handler).handle(next);
       }
       this.schedule(0);
     }
+  }
+
+  private Handler<ConsumerRecord<K, V>> tracedHandler(Handler<ConsumerRecord<K, V>> handler) {
+    return this.tracer == null ? handler :
+      rec -> {
+        ContextInternal ctx = ((ContextInternal)this.context).duplicate();
+        ctx.emit(v -> {
+          ConsumerTracer.StartedSpan startedSpan = tracer.prepareMessageReceived(ctx, rec);
+          try {
+            handler.handle(rec);
+            startedSpan.finish(ctx);
+          } catch (Throwable t) {
+            startedSpan.fail(ctx, t);
+            throw t;
+          }
+        });
+      };
   }
 
   protected <T> void submitTask(java.util.function.BiConsumer<Consumer<K, V>, Promise<T>> task,
@@ -678,6 +703,11 @@ public class KafkaReadStreamImpl<K, V> implements KafkaReadStream<K, V> {
     return this;
   }
 
+  @Override
+  public long demand() {
+    return this.demand.get();
+  }
+
   private KafkaReadStreamImpl<K, V> startConsuming() {
     this.consuming.set(true);
     this.schedule(0);
@@ -854,13 +884,13 @@ public class KafkaReadStreamImpl<K, V> implements KafkaReadStream<K, V> {
   }
 
   @Override
-  public KafkaReadStream<K, V> pollTimeout(long timeout) {
+  public KafkaReadStream<K, V> pollTimeout(final Duration timeout) {
     this.pollTimeout = timeout;
     return this;
   }
 
   @Override
-  public void poll(long timeout, Handler<AsyncResult<ConsumerRecords<K, V>>> handler) {
+  public void poll(final Duration timeout, final Handler<AsyncResult<ConsumerRecords<K, V>>> handler) {
     this.worker.submit(() -> {
       if (!this.closed.get()) {
         try {
@@ -875,8 +905,14 @@ public class KafkaReadStreamImpl<K, V> implements KafkaReadStream<K, V> {
     });
   }
 
+  public Future<ConsumerRecords<K, V>> poll(final Duration timeout) {
+    final Promise<ConsumerRecords<K, V>> promise = Promise.promise();
+    poll(timeout, promise);
+    return promise.future();
+  }
+
   @Override
-  public void poll(long timeout, Handler<AsyncResult<ConsumerRecords<K, V>>> handler, TracingKafkaConsumer tracer) {
+  public void poll(final Duration timeout, Handler<AsyncResult<ConsumerRecords<K, V>>> handler, TracingKafkaConsumer tracer) {
     this.worker.submit(() -> {
       if (!this.closed.get()) {
         try {
@@ -889,12 +925,5 @@ public class KafkaReadStreamImpl<K, V> implements KafkaReadStream<K, V> {
         }
       }
     });
-  }
-
-  @Override
-  public Future<ConsumerRecords<K, V>> poll(long timeout) {
-    Promise<ConsumerRecords<K, V>> promise = Promise.promise();
-    poll(timeout, promise);
-    return promise.future();
   }
 }

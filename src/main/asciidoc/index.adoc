@@ -8,8 +8,6 @@ messages asynchronously or reading them as a stream (even with the possibility t
 
 As producer, the API provides methods for sending message to a topic partition like writing on a stream.
 
-WARNING: this module has the tech preview status, this means the API can change between versions.
-
 == Using the Vert.x Kafka client
 
 To use this component, add the following dependency to the dependencies section of your build descriptor:
@@ -167,7 +165,7 @@ the list of the current assigned partitions.
 == Receiving messages with explicit polling
 
 Other than using the internal polling mechanism in order to receive messages from Kafka, the client can subscribe to a
-topic, avoiding to register the handler for getting the messages and then using the {@link io.vertx.kafka.client.consumer.KafkaConsumer#poll(long, io.vertx.core.Handler)} method.
+topic, avoiding to register the handler for getting the messages and then using the {@link io.vertx.kafka.client.consumer.KafkaConsumer#poll(Duration, io.vertx.core.Handler)} method.
 
 In this way, the user application is in charge to execute the poll for getting messages when it needs, for example after processing
 the previous ones.
@@ -470,5 +468,24 @@ stream of {@link org.apache.kafka.clients.producer.ProducerRecord}.
 
 The API exposed by these interfaces is mostly the same than the polyglot version.
 endif::[]
+
+== Automatic trace propagation
+
+When Vert.x is configured with Tracing enabled (see {@link io.vertx.core.VertxOptions#setTracingOptions}),
+traces will be automatically propagated with Kafka messages.
+
+Kafka producers will add a span to traces when a message is being written, trace contexts
+will be propagated as Kafka headers, and the consumers will also create a span while reading a message.
+
+Following the
+link:https://github.com/opentracing/specification/blob/master/semantic_conventions.md[OpenTracing semantic convention],
+span tags are:
+
+- `span.kind`, it is either `consumer` or `producer`
+- `peer.address` can be configured from {@link io.vertx.kafka.client.common.KafkaClientOptions#setTracePeerAddress}. If unset, it will be the configured bootstrap server.
+- `peer.hostname` is parsed from `peer.address`
+- `peer.port` is parsed from `peer.address`
+- `peer.service` is always `kafka`
+- `message_bus.destination`, which is set to the topic in use
 
 include::admin.adoc[]

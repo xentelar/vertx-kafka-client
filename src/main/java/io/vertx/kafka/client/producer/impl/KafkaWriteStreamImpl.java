@@ -22,39 +22,22 @@ import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
+import io.vertx.core.impl.ContextInternal;
+import io.vertx.kafka.client.common.KafkaClientOptions;
+import io.vertx.kafka.client.common.tracing.ProducerTracer;
 import io.vertx.kafka.client.producer.KafkaWriteStream;
 import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.PartitionInfo;
-import org.apache.kafka.common.serialization.Serializer;
 
+import java.time.Duration;
 import java.util.List;
-import java.util.Map;
-import java.util.Properties;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Kafka write stream implementation
  */
 public class KafkaWriteStreamImpl<K, V> implements KafkaWriteStream<K, V> {
-
-  public static <K, V> KafkaWriteStreamImpl<K, V> create(Vertx vertx, Properties config) {
-    return new KafkaWriteStreamImpl<>(vertx.getOrCreateContext(), new org.apache.kafka.clients.producer.KafkaProducer<>(config));
-  }
-
-  public static <K, V> KafkaWriteStreamImpl<K, V> create(Vertx vertx, Properties config, Serializer<K> keySerializer, Serializer<V> valueSerializer) {
-    return new KafkaWriteStreamImpl<>(vertx.getOrCreateContext(), new org.apache.kafka.clients.producer.KafkaProducer<>(config, keySerializer, valueSerializer));
-  }
-
-  public static <K, V> KafkaWriteStreamImpl<K, V> create(Vertx vertx, Map<String, Object> config) {
-    return new KafkaWriteStreamImpl<>(vertx.getOrCreateContext(), new org.apache.kafka.clients.producer.KafkaProducer<>(config));
-  }
-
-  public static <K, V> KafkaWriteStreamImpl<K, V> create(Vertx vertx, Map<String, Object> config, Serializer<K> keySerializer, Serializer<V> valueSerializer) {
-    return new KafkaWriteStreamImpl<>(vertx.getOrCreateContext(), new org.apache.kafka.clients.producer.KafkaProducer<>(config, keySerializer, valueSerializer));
-  }
 
   private long maxSize = DEFAULT_MAX_SIZE;
   private long pending;
@@ -62,10 +45,13 @@ public class KafkaWriteStreamImpl<K, V> implements KafkaWriteStream<K, V> {
   private Handler<Void> drainHandler;
   private Handler<Throwable> exceptionHandler;
   private final Context context;
+  private final ProducerTracer tracer;
 
-  public KafkaWriteStreamImpl(Context context, Producer<K, V> producer) {
+  public KafkaWriteStreamImpl(Vertx vertx, Producer<K, V> producer, KafkaClientOptions options) {
     this.producer = producer;
-    this.context = context;
+    ContextInternal ctxInt = (ContextInternal) vertx.getOrCreateContext();
+    this.context = ctxInt;
+    this.tracer = ProducerTracer.create(ctxInt.tracer(), options);
   }
 
   private int len(Object value) {
@@ -80,17 +66,12 @@ public class KafkaWriteStreamImpl<K, V> implements KafkaWriteStream<K, V> {
 
   @Override
   public Future<RecordMetadata> send(ProducerRecord<K, V> record) {
-    Promise<RecordMetadata> promise = Promise.promise();
-    send(record, promise);
-    return promise.future();
-  }
-
-  @Override
-  public synchronized KafkaWriteStreamImpl<K, V> send(ProducerRecord<K, V> record, Handler<AsyncResult<RecordMetadata>> handler) {
-
+    ContextInternal ctx = (ContextInternal) context.owner().getOrCreateContext();
+    ProducerTracer.StartedSpan startedSpan = this.tracer == null ? null : this.tracer.prepareSendMessage(ctx, record);
+    Promise<RecordMetadata> trampolineProm = ctx.promise();
     int len = this.len(record.value());
     this.pending += len;
-    this.context.<RecordMetadata>executeBlocking(fut -> {
+    this.context.<RecordMetadata>executeBlocking(prom -> {
       try {
         this.producer.send(record, (metadata, err) -> {
 
@@ -115,11 +96,19 @@ public class KafkaWriteStreamImpl<K, V> implements KafkaWriteStream<K, V> {
                 this.context.runOnContext(drainHandler);
               }
             }
-
-            if (handler != null) {
-              handler.handle(err != null ? Future.failedFuture(err) : Future.succeededFuture(metadata));
-            }
           });
+
+          if (err != null) {
+            if (startedSpan != null) {
+              startedSpan.fail(ctx, err);
+            }
+            prom.fail(err);
+          } else {
+            if (startedSpan != null) {
+              startedSpan.finish(ctx);
+            }
+            prom.complete(metadata);
+          }
         });
       } catch (Throwable e) {
         synchronized (KafkaWriteStreamImpl.this) {
@@ -128,30 +117,29 @@ public class KafkaWriteStreamImpl<K, V> implements KafkaWriteStream<K, V> {
             this.context.runOnContext(v3 -> exceptionHandler.handle(e));
           }
         }
-
-        if (handler != null) {
-          handler.handle(Future.failedFuture(e));
+        if (startedSpan != null) {
+          startedSpan.fail(ctx, e);
         }
+        prom.fail(e);
       }
-    }, null);
+    }).onComplete(trampolineProm);
+    return trampolineProm.future(); // Trampoline on caller context
+  }
 
+  @Override
+  public synchronized KafkaWriteStreamImpl<K, V> send(ProducerRecord<K, V> record, Handler<AsyncResult<RecordMetadata>> handler) {
+    this.send(record).onComplete(handler);
     return this;
   }
 
   @Override
   public void write(ProducerRecord<K, V> data, Handler<AsyncResult<Void>> handler) {
-    Handler<AsyncResult<RecordMetadata>> mdHandler = null;
-    if (handler != null) {
-      mdHandler = ar -> handler.handle(ar.mapEmpty());
-    }
-    send(data, mdHandler);
+    this.write(data).onComplete(handler);
   }
 
   @Override
   public Future<Void> write(ProducerRecord<K, V> record) {
-    Promise<Void> promise = Promise.promise();
-    this.write(record, promise);
-    return promise.future();
+    return this.send(record).mapEmpty();
   }
 
   @Override
@@ -179,6 +167,50 @@ public class KafkaWriteStreamImpl<K, V> implements KafkaWriteStream<K, V> {
   }
 
   @Override
+  public KafkaWriteStream<K, V> initTransactions(Handler<AsyncResult<Void>> handler) {
+    initTransactions().onComplete(handler);
+    return this;
+  }
+
+  @Override
+  public Future<Void> initTransactions() {
+    return executeBlocking(this.producer::initTransactions);
+  }
+
+  @Override
+  public KafkaWriteStream<K, V> beginTransaction(Handler<AsyncResult<Void>> handler) {
+    beginTransaction().onComplete(handler);
+    return this;
+  }
+
+  @Override
+  public Future<Void> beginTransaction() {
+    return executeBlocking(this.producer::beginTransaction);
+  }
+
+  @Override
+  public KafkaWriteStream<K, V> commitTransaction(Handler<AsyncResult<Void>> handler) {
+    commitTransaction().onComplete(handler);
+    return this;
+  }
+
+  @Override
+  public Future<Void> commitTransaction() {
+    return executeBlocking(this.producer::commitTransaction);
+  }
+
+  @Override
+  public KafkaWriteStream<K, V> abortTransaction(Handler<AsyncResult<Void>> handler) {
+    abortTransaction().onComplete(handler);
+    return this;
+  }
+
+  @Override
+  public Future<Void> abortTransaction() {
+    return executeBlocking(this.producer::abortTransaction);
+  }
+
+  @Override
   public KafkaWriteStreamImpl<K, V> exceptionHandler(Handler<Throwable> handler) {
     this.exceptionHandler = handler;
     return this;
@@ -186,58 +218,49 @@ public class KafkaWriteStreamImpl<K, V> implements KafkaWriteStream<K, V> {
 
   @Override
   public Future<List<PartitionInfo>> partitionsFor(String topic) {
-    Promise<List<PartitionInfo>> promise = Promise.promise();
-    partitionsFor(topic, promise);
-    return promise.future();
+    ContextInternal ctx = (ContextInternal) context.owner().getOrCreateContext();
+    Promise<List<PartitionInfo>> trampolineProm = ctx.promise();
+
+    // TODO: should be this timeout related to the Kafka producer property "metadata.fetch.timeout.ms" ?
+    this.context.owner().setTimer(2000, id -> {
+      trampolineProm.tryFail("Kafka connect timeout");
+    });
+
+    this.context.<List<PartitionInfo>>executeBlocking(prom -> {
+      prom.complete(
+        this.producer.partitionsFor(topic)
+      );
+    }).onComplete(trampolineProm);
+
+    return trampolineProm.future(); // Trampoline on caller context
   }
 
   @Override
   public KafkaWriteStreamImpl<K, V> partitionsFor(String topic, Handler<AsyncResult<List<PartitionInfo>>> handler) {
-
-    AtomicBoolean done = new AtomicBoolean();
-
-    // TODO: should be this timeout related to the Kafka producer property "metadata.fetch.timeout.ms" ?
-    this.context.owner().setTimer(2000, id -> {
-      if (done.compareAndSet(false, true)) {
-        handler.handle(Future.failedFuture("Kafka connect timeout"));
-      }
-    });
-
-    this.context.executeBlocking(future -> {
-
-      List<PartitionInfo> partitions = this.producer.partitionsFor(topic);
-      if (done.compareAndSet(false, true)) {
-        future.complete(partitions);
-      }
-    }, handler);
-
+    partitionsFor(topic).onComplete(handler);
     return this;
   }
 
   @Override
   public Future<Void> flush() {
-    Promise<Void> promise = Promise.promise();
-    flush(promise);
-    return promise.future();
+    ContextInternal ctx = (ContextInternal) context.owner().getOrCreateContext();
+    Promise<Void> trampolineProm = ctx.promise();
+    this.context.<Void>executeBlocking(prom -> {
+      this.producer.flush();
+      prom.complete();
+    }).onComplete(trampolineProm);
+    return trampolineProm.future(); // Trampoline on caller context
   }
 
   @Override
   public KafkaWriteStreamImpl<K, V> flush(Handler<AsyncResult<Void>> completionHandler) {
-
-    this.context.executeBlocking(future -> {
-
-      this.producer.flush();
-      future.complete();
-
-    }, completionHandler);
-
+    flush().onComplete(completionHandler);
     return this;
   }
 
+  @Override
   public Future<Void> close() {
-    Promise<Void> promise = Promise.promise();
-    close(promise);
-    return promise.future();
+    return close(0);
   }
 
   @Override
@@ -247,25 +270,43 @@ public class KafkaWriteStreamImpl<K, V> implements KafkaWriteStream<K, V> {
 
   @Override
   public Future<Void> close(long timeout) {
-    Promise<Void> promise = Promise.promise();
-    close(timeout, promise);
-    return promise.future();
-  }
-
-  public void close(long timeout, Handler<AsyncResult<Void>> completionHandler) {
-
-    this.context.executeBlocking(future -> {
+    ContextInternal ctx = (ContextInternal) context.owner().getOrCreateContext();
+    Promise<Void> trampolineProm = ctx.promise();
+    this.context.executeBlocking(prom -> {
       if (timeout > 0) {
-        this.producer.close(timeout, TimeUnit.MILLISECONDS);
+        this.producer.close(Duration.ofMillis(timeout));
       } else {
         this.producer.close();
       }
-      future.complete();
-    }, completionHandler);
+      prom.complete();
+    }, trampolineProm);
+    return trampolineProm.future(); // Trampoline on caller context
+  }
+
+  @Override
+  public void close(long timeout, Handler<AsyncResult<Void>> completionHandler) {
+    close(timeout).onComplete(completionHandler);
   }
 
   @Override
   public Producer<K, V> unwrap() {
     return this.producer;
+  }
+
+  Future<Void> executeBlocking(final BlockingStatement statement) {
+    return this.context.executeBlocking(promise -> {
+      try {
+        statement.execute();
+        promise.complete();
+      } catch (Exception e) {
+        promise.fail(e);
+      }
+    });
+  }
+
+  @FunctionalInterface
+  private interface BlockingStatement {
+
+    void execute();
   }
 }

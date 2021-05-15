@@ -20,14 +20,18 @@ import io.vertx.core.Handler;
 import io.vertx.kafka.admin.Config;
 import io.vertx.kafka.admin.ConfigEntry;
 import io.vertx.kafka.admin.ConsumerGroupListing;
+import io.vertx.kafka.admin.ListConsumerGroupOffsetsOptions;
+import io.vertx.kafka.admin.ListOffsetsResultInfo;
 import io.vertx.kafka.admin.MemberAssignment;
 import io.vertx.kafka.admin.NewTopic;
+import io.vertx.kafka.admin.OffsetSpec;
 import io.vertx.kafka.client.common.ConfigResource;
 import io.vertx.kafka.client.common.Node;
 import io.vertx.kafka.client.consumer.OffsetAndTimestamp;
 import io.vertx.kafka.client.common.TopicPartition;
 import io.vertx.kafka.client.consumer.OffsetAndMetadata;
 import io.vertx.kafka.client.producer.RecordMetadata;
+import org.apache.kafka.clients.admin.AlterConfigOp;
 
 import java.util.Collection;
 import java.util.HashSet;
@@ -168,19 +172,17 @@ public class Helper {
     return configResources.stream().map(Helper::to).collect(Collectors.toList());
   }
 
-  public static Collection<org.apache.kafka.clients.admin.ConfigEntry> toConfigEntryList(List<ConfigEntry> configEntries) {
-    return configEntries.stream().map(Helper::to).collect(Collectors.toList());
-  }
-
   public static org.apache.kafka.clients.admin.ConfigEntry to(ConfigEntry configEntry) {
     return new org.apache.kafka.clients.admin.ConfigEntry(configEntry.getName(), configEntry.getValue());
   }
 
-  public static Map<org.apache.kafka.common.config.ConfigResource, org.apache.kafka.clients.admin.Config> toConfigMaps(Map<ConfigResource, Config> configs) {
+  public static Map<org.apache.kafka.common.config.ConfigResource, Collection<AlterConfigOp>> toConfigMaps(Map<ConfigResource, Config> configs) {
+
     return configs.entrySet().stream().collect(Collectors.toMap(
-      e -> new org.apache.kafka.common.config.ConfigResource(e.getKey().getType(), e.getKey().getName()),
-      e -> new org.apache.kafka.clients.admin.Config(Helper.toConfigEntryList(e.getValue().getEntries()))
-    ));
+            e -> new org.apache.kafka.common.config.ConfigResource(e.getKey().getType(), e.getKey().getName()),
+            e -> e.getValue().getEntries().stream().map(
+                    v -> new AlterConfigOp(to(v), AlterConfigOp.OpType.SET)).collect(Collectors.toList())));
+
   }
 
   public static ConfigEntry from(org.apache.kafka.clients.admin.ConfigEntry configEntry) {
@@ -201,5 +203,45 @@ public class Helper {
 
   public static MemberAssignment from(org.apache.kafka.clients.admin.MemberAssignment memberAssignment) {
     return new MemberAssignment(Helper.from(memberAssignment.topicPartitions()));
+  }
+
+  public static org.apache.kafka.clients.admin.ListConsumerGroupOffsetsOptions to(ListConsumerGroupOffsetsOptions listConsumerGroupOffsetsOptions) {
+
+    org.apache.kafka.clients.admin.ListConsumerGroupOffsetsOptions newListConsumerGroupOffsetsOptions = new org.apache.kafka.clients.admin.ListConsumerGroupOffsetsOptions();
+
+    if (listConsumerGroupOffsetsOptions.topicPartitions() != null) {
+      List<org.apache.kafka.common.TopicPartition> topicPartitions = listConsumerGroupOffsetsOptions.topicPartitions().stream()
+        .map(tp -> new org.apache.kafka.common.TopicPartition(tp.getTopic(), tp.getPartition()))
+        .collect(Collectors.toList());
+
+      newListConsumerGroupOffsetsOptions.topicPartitions(topicPartitions);
+    }
+
+    return newListConsumerGroupOffsetsOptions;
+  }
+
+  public static Set<org.apache.kafka.common.TopicPartition> toTopicPartitionSet(Set<TopicPartition> partitions) {
+    return partitions.stream().map(Helper::to).collect(Collectors.toSet());
+  }
+
+  public static org.apache.kafka.clients.admin.OffsetSpec to(OffsetSpec os) {
+    if (os.EARLIEST == os) {
+      return org.apache.kafka.clients.admin.OffsetSpec.earliest();
+    } else if (os.LATEST == os) {
+      return org.apache.kafka.clients.admin.OffsetSpec.latest();
+    } else {
+      return org.apache.kafka.clients.admin.OffsetSpec.forTimestamp(os.getSpec());
+    }
+  }
+
+  public static Map<org.apache.kafka.common.TopicPartition, org.apache.kafka.clients.admin.OffsetSpec> toTopicPartitionOffsets(Map<TopicPartition, OffsetSpec> topicPartitionOffsets) {
+    return topicPartitionOffsets.entrySet().stream().collect(Collectors.toMap(
+      e -> new org.apache.kafka.common.TopicPartition(e.getKey().getTopic(), e.getKey().getPartition()),
+      e -> to(e.getValue())
+    ));
+  }
+
+  public static ListOffsetsResultInfo from(org.apache.kafka.clients.admin.ListOffsetsResult.ListOffsetsResultInfo lori) {
+    return new ListOffsetsResultInfo(lori.offset(), lori.timestamp(), lori.leaderEpoch().orElse(null));
   }
 }

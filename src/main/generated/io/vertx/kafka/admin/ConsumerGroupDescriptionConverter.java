@@ -2,6 +2,7 @@ package io.vertx.kafka.admin;
 
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.json.JsonArray;
+import io.vertx.core.json.impl.JsonUtil;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 
@@ -17,7 +18,7 @@ public class ConsumerGroupDescriptionConverter {
       switch (member.getKey()) {
         case "coordinator":
           if (member.getValue() instanceof JsonObject) {
-            obj.setCoordinator(new io.vertx.kafka.client.common.Node((JsonObject)member.getValue()));
+            obj.setCoordinator(new io.vertx.kafka.client.common.Node((io.vertx.core.json.JsonObject)member.getValue()));
           }
           break;
         case "groupId":
@@ -30,7 +31,7 @@ public class ConsumerGroupDescriptionConverter {
             java.util.ArrayList<io.vertx.kafka.admin.MemberDescription> list =  new java.util.ArrayList<>();
             ((Iterable<Object>)member.getValue()).forEach( item -> {
               if (item instanceof JsonObject)
-                list.add(new io.vertx.kafka.admin.MemberDescription((JsonObject)item));
+                list.add(new io.vertx.kafka.admin.MemberDescription((io.vertx.core.json.JsonObject)item));
             });
             obj.setMembers(list);
           }

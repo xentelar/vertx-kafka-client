@@ -2,6 +2,7 @@ package io.vertx.kafka.admin;
 
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.json.JsonArray;
+import io.vertx.core.json.impl.JsonUtil;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 
@@ -20,7 +21,7 @@ public class ConfigConverter {
             java.util.ArrayList<io.vertx.kafka.admin.ConfigEntry> list =  new java.util.ArrayList<>();
             ((Iterable<Object>)member.getValue()).forEach( item -> {
               if (item instanceof JsonObject)
-                list.add(new io.vertx.kafka.admin.ConfigEntry((JsonObject)item));
+                list.add(new io.vertx.kafka.admin.ConfigEntry((io.vertx.core.json.JsonObject)item));
             });
             obj.setEntries(list);
           }
