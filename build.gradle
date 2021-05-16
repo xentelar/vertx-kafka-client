@@ -15,7 +15,10 @@ repositories {
 dependencies {
 
   implementation 'io.vertx:vertx-core:4.0.3'
-  implementation group: 'org.apache.kafka', name: 'kafka-clients', version: '2.6.0'
+  implementation ('org.apache.kafka:kafka-clients:2.6.0'){
+    exclude group: 'log4j', module: 'log4j'
+  }
+
   implementation group: 'io.opentracing.contrib', name: 'opentracing-kafka-client', version: '0.1.15'
   implementation group: 'org.slf4j', name: 'slf4j-api', version: '1.7.30'
   implementation group: 'org.scala-lang', name: 'scala-library', version: '2.12.11'
