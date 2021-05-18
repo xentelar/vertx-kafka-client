@@ -30,7 +30,7 @@ dependencies {
   testImplementation group: 'io.vertx', name: 'vertx-unit', version: '4.0.3'
   testImplementation group: 'io.debezium', name: 'debezium-core', version: '0.8.3.Final'
   testImplementation group: 'io.debezium', name: 'debezium-core', version: '0.8.3.Final', classifier: 'tests'
-  testImplementation group: 'org.apache.kafka', name: 'kafka_2.11', version: '2.4.1'
+  testImplementation group: 'org.apache.kafka', name: 'kafka_2.12', version: '2.6.0'
   testImplementation group: 'org.scala-lang', name: 'scala-library', version: '2.12.4'
 }
 
